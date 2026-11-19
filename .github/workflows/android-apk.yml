@@ -1,0 +1,121 @@
+name: Android APK — Tadbir (private source only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: Build, sign and verify installation package
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reject public repository or missing source
+        env:
+          REPO_VISIBILITY: ${{ github.event.repository.private }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$REPO_VISIBILITY" != "true" ]]; then
+            echo 'ERROR: Change repository to PRIVATE before storing or building Tadbir source.' >&2
+            exit 1
+          fi
+          if [[ -f settings.gradle && -f app/build.gradle ]]; then
+            echo "PROJECT_ROOT=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          elif [[ -f Tadbir_Aegis_V3/settings.gradle && -f Tadbir_Aegis_V3/app/build.gradle ]]; then
+            echo "PROJECT_ROOT=$GITHUB_WORKSPACE/Tadbir_Aegis_V3" >> "$GITHUB_ENV"
+          else
+            echo 'ERROR: Android source missing. Upload the last CLEAN Tadbir source.' >&2
+            exit 1
+          fi
+
+      - name: Configure Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configure Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Configure Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+
+      - name: Build release (unsigned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_ROOT"
+          gradle --no-daemon --stacktrace :app:assembleRelease
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Download signer
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --silent --show-error \
+            'https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar' \
+            --output "$RUNNER_TEMP/uber-apk-signer-1.3.0.jar"
+          test -s "$RUNNER_TEMP/uber-apk-signer-1.3.0.jar"
+          java -jar "$RUNNER_TEMP/uber-apk-signer-1.3.0.jar" --version
+
+      - name: Sign for development with Uber APK Signer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/signed"
+          java -jar "$RUNNER_TEMP/uber-apk-signer-1.3.0.jar" \
+            --apks "$PROJECT_ROOT/app/build/outputs/apk/release/app-release-unsigned.apk" \
+            --out "$RUNNER_TEMP/signed" \
+            --zipAlignPath "$ANDROID_HOME/build-tools/36.0.0/zipalign"
+          mapfile -t apks < <(find "$RUNNER_TEMP/signed" -maxdepth 1 -type f -name '*.apk' | sort)
+          if [[ "${#apks[@]}" -ne 1 ]]; then
+            echo "ERROR: Expected one signed APK, found ${#apks[@]}" >&2
+            exit 1
+          fi
+          echo "SIGNED_APK=${apks[0]}" >> "$GITHUB_ENV"
+
+      - name: Verify APK signature, alignment, package and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          apksigner="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          zipalign="$ANDROID_HOME/build-tools/36.0.0/zipalign"
+          aapt="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          "$apksigner" verify --verbose --print-certs "$SIGNED_APK" | tee "$RUNNER_TEMP/signature-report.txt"
+          "$zipalign" -c -p 4 "$SIGNED_APK"
+          "$aapt" dump badging "$SIGNED_APK" > "$RUNNER_TEMP/package-badging.txt"
+          grep -q "package: name='ma.tadbir.web'" "$RUNNER_TEMP/package-badging.txt"
+          grep -q "sdkVersion:'26'" "$RUNNER_TEMP/package-badging.txt"
+          unzip -t "$SIGNED_APK" | tail -n 1
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$SIGNED_APK" "$GITHUB_WORKSPACE/dist/Tadbir_Aegis_V3_Development_Signed.apk"
+          cp "$RUNNER_TEMP/signature-report.txt" "$GITHUB_WORKSPACE/dist/signature-report.txt"
+          cp "$RUNNER_TEMP/package-badging.txt" "$GITHUB_WORKSPACE/dist/package-badging.txt"
+          (cd "$GITHUB_WORKSPACE/dist" && sha256sum Tadbir_Aegis_V3_Development_Signed.apk > SHA256SUMS.txt)
+
+      - name: Upload signed development APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: tadbir-android-development-signed-apk
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
