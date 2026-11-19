@@ -1,6 +1,8 @@
-name: Android APK — Tadbir (private source only)
+name: Android APK — Tadbir (developer build)
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -21,16 +23,10 @@ jobs:
         with:
           lfs: true
 
-      - name: Reject public repository or missing source
-        env:
-          REPO_VISIBILITY: ${{ github.event.repository.private }}
+      - name: Check required Android sources
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$REPO_VISIBILITY" != "true" ]]; then
-            echo 'ERROR: Change repository to PRIVATE before storing or building Tadbir source.' >&2
-            exit 1
-          fi
           if [[ -f settings.gradle && -f app/build.gradle ]]; then
             echo "PROJECT_ROOT=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           elif [[ -f Tadbir_Aegis_V3/settings.gradle && -f Tadbir_Aegis_V3/app/build.gradle ]]; then
