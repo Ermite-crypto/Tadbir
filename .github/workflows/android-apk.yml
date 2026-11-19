@@ -3,6 +3,13 @@ name: Android APK — Tadbir (developer build)
 on:
   push:
     branches: [main]
+    paths:
+      - 'app/**'
+      - 'Tadbir_Aegis_V3/app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'Tadbir_Aegis_V3/build.gradle'
+      - 'Tadbir_Aegis_V3/settings.gradle'
   workflow_dispatch:
 
 permissions:
